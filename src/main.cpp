@@ -18,7 +18,6 @@ void triggerAlarm(bool motion, bool vibration, bool light);
 void recalibrateLight();
 void armSystem();
 void disarmSystem();
-void updateBuzzer();
 void initHM10();
 
 // --- Bluetooth (HM-10 BLE module) ---
@@ -116,7 +115,6 @@ void loop() {
   }
 
   if (alarmTriggered) {
-    updateBuzzer();
     if (millis() - triggerTime > ALARM_DURATION) {
       Serial.println("[ALARM] Auto-reset.");
       resetAlarm();
@@ -204,23 +202,6 @@ void triggerAlarm(bool motion, bool vibration, bool light) {
   Serial.println();
 }
 
-// Nieblokujące pikanie buzzera podczas alarmu
-void updateBuzzer() {
-  unsigned long now = millis();
-  if (beepState) {
-    if (now - lastBeepToggle > BEEP_ON_MS) {
-      digitalWrite(BUZZER_PIN, LOW);
-      beepState      = false;
-      lastBeepToggle = now;
-    }
-  } else {
-    if (now - lastBeepToggle > BEEP_OFF_MS) {
-      digitalWrite(BUZZER_PIN, HIGH);
-      beepState      = true;
-      lastBeepToggle = now;
-    }
-  }
-}
 
 void resetAlarm() {
   alarmTriggered = false;
