@@ -1,12 +1,11 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
-// ============================================================
+
 //  Arduino UNO Alarm System
 //  PIR HC-SR501  → D2 (digital)
 //  Iduino SE053  → D3 (digital, LOW = vibration)
 //  LDR light     → A0 (analog)
-//  HM-10 BLE     → D10 (TX), D11 (RX)
-// ============================================================
+//  HM-10 BLE     → D11   (TX), D10 (RX)
 
 // --- Forward declarations ---
 void handleSerialCommand();
@@ -20,9 +19,10 @@ void recalibrateLight();
 void armSystem();
 void disarmSystem();
 void updateBuzzer();
+void initHM10();
 
 // --- Bluetooth (HM-10 BLE module) ---
-SoftwareSerial btSerial(11, 10); // RX=D11, TX=D10
+SoftwareSerial btSerial(10, 11); // RX=D10, TX=D11
 
 // --- Pin definitions ---
 const int PIR_PIN       = 2;
@@ -41,7 +41,9 @@ bool pirEnabled     = true;
 bool          alarmArmed     = false;
 bool          alarmTriggered = false;
 unsigned long triggerTime    = 0;
-const unsigned long ALARM_DURATION = 10000;
+unsigned long rearmTime      = 0;
+const unsigned long ALARM_DURATION  = 1500;
+const unsigned long REARM_DELAY     = 2000;
 
 // --- PIR debounce ---
 unsigned long lastPirTime = 0;
@@ -70,7 +72,6 @@ unsigned long lastPrint  = 0;
 const int     PRINT_INTERVAL = 500;
 
 
-// ============================================================
 void setup() {
   Serial.begin(9600);
   btSerial.begin(9600);
@@ -83,6 +84,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(VIBRATION_PIN), onVibration, FALLING);
 
   Serial.println("=== Alarm System Initializing ===");
+  initHM10();
 
   Serial.println("Calibrating light sensor...");
   long sum = 0;
@@ -105,7 +107,6 @@ void setup() {
 }
 
 
-// ============================================================
 void loop() {
   handleSerialCommand();
   handleBTCommand();
@@ -130,11 +131,11 @@ void loop() {
 }
 
 
-// ============================================================
 //  SENSOR LOGIC
-// ============================================================
 
 void checkSensors() {
+  if (millis() < rearmTime) return;
+
   bool motionDetected    = false;
   bool vibrationDetected = false;
   bool lightChanged      = false;
@@ -168,9 +169,7 @@ void checkSensors() {
 }
 
 
-// ============================================================
 //  ALARM CONTROL
-// ============================================================
 
 void armSystem() {
   alarmArmed     = true;
@@ -226,16 +225,14 @@ void updateBuzzer() {
 void resetAlarm() {
   alarmTriggered = false;
   beepState      = false;
+  rearmTime      = millis() + REARM_DELAY;
   digitalWrite(BUZZER_PIN, LOW);
   digitalWrite(LED_STATUS, LOW);
   Serial.println("[ALARM] Reset. Re-armed.");
-  recalibrateLight();
 }
 
 
-// ============================================================
 //  RECALIBRATION
-// ============================================================
 
 void recalibrateLight() {
   Serial.println("[CALIBRATE] Recalibrating light baseline...");
@@ -250,12 +247,10 @@ void recalibrateLight() {
 }
 
 
-// ============================================================
 //  SERIAL COMMANDS (9600 baud)
 //  a = arm          d = disarm       r = reset alarm
 //  c = recalibrate  + = raise light threshold
 //  - = lower light threshold         p = toggle PIR
-// ============================================================
 
 void handleSerialCommand() {
   if (!Serial.available()) return;
@@ -282,15 +277,38 @@ void handleSerialCommand() {
 }
 
 
-// ============================================================
 //  BLUETOOTH (HM-10 BLE)
-// ============================================================
+
+// Sends AT command, waits, prints response to Serial
+static void atCmd(const char* cmd) {
+  btSerial.print(cmd);
+  delay(200);
+  Serial.print(cmd);
+  Serial.print(" -> ");
+  unsigned long t = millis();
+  while (millis() - t < 300) {
+    if (btSerial.available()) Serial.write(btSerial.read());
+  }
+  Serial.println();
+}
+
+// Configures HM-10: peripheral mode, immediate start, no UART noise
+void initHM10() {
+  Serial.println("[HM-10] Configuring...");
+  delay(200);
+  atCmd("AT");
+  atCmd("AT+ROLE0");
+  atCmd("AT+IMME0");
+  delay(800);
+  while (btSerial.available()) btSerial.read();  // flush garbage after reset
+  Serial.println("[HM-10] Ready.");
+}
 
 // Sends compact CSV line: light,pir,vibration,armed,alarm
 void sendBluetoothData() {
   int lightNow = analogRead(LIGHT_PIN);
   int pirState = digitalRead(PIR_PIN);
-  int vibState = (digitalRead(VIBRATION_PIN) == LOW) ? 1 : 0;
+  int vibState = (millis() - lastVibrationTime < 1000) ? 1 : 0;
 
   btSerial.print(lightNow);
   btSerial.print(',');
@@ -326,14 +344,12 @@ void handleBTCommand() {
 }
 
 
-// ============================================================
-//  DEBUG OUTPUT
-// ============================================================
+//  OUTPUT
 
 void printSensorValues() {
   if (!alarmArmed) return;
   Serial.print("PIR:");  Serial.print(digitalRead(PIR_PIN));
-  Serial.print("  VIB:"); Serial.print(digitalRead(VIBRATION_PIN));
+  Serial.print("  VIB:"); Serial.print(!digitalRead(VIBRATION_PIN));
   Serial.print("  LIGHT:"); Serial.print(analogRead(LIGHT_PIN));
   Serial.print(" (base:"); Serial.print(lightBaseline);
   Serial.print(" ±");       Serial.print(lightThreshold);
